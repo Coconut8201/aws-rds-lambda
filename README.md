@@ -321,5 +321,4 @@ Lambda → RDS Proxy → RDS Instance
 ## 參考資料
 
 - [AWS Lambda Layers 官方文件](https://docs.aws.amazon.com/lambda/latest/dg/configuration-layers.html)
-- [node-postgres 文件](https://node-postgres.com/)
 - [AWS RDS 最佳實踐](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_BestPractices.html)
