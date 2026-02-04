@@ -184,13 +184,126 @@ DB_PASSWORD=your-password
 
 ---
 
+## 生產環境配置：私有 RDS 存取
+
+### 問題：如果 RDS 設為私有（Private），Lambda 該如何存取？
+
+在生產環境中，RDS **不應該**設為公開存取。以下是讓 Lambda 存取私有 RDS 的正確方法：
+
+### 解決方案：將 Lambda 部署到 VPC 內
+
+#### 配置步驟
+
+1. **將 Lambda 函數部署到與 RDS 相同的 VPC**
+   - 進入 Lambda 函數 → Configuration → VPC
+   - 選擇與 RDS 相同的 VPC
+   - 選擇**私有子網路**（Private Subnets）- 至少 2 個不同可用區域
+   - 選擇適當的安全群組（Security Group）
+
+2. **設定安全群組規則**
+   
+   **RDS 安全群組入站規則（Inbound Rules）：**
+   ```
+   Type: PostgreSQL
+   Protocol: TCP
+   Port: 5432
+   Source: Lambda 函數的安全群組
+   ```
+
+   **Lambda 安全群組出站規則（Outbound Rules）：**
+   ```
+   Type: All traffic
+   Protocol: All
+   Destination: 0.0.0.0/0（或更嚴格的規則）
+   ```
+
+3. **配置 NAT Gateway（如果 Lambda 需要存取外部網路）**
+   - 在公有子網路建立 NAT Gateway
+   - 更新私有子網路的路由表，將 `0.0.0.0/0` 指向 NAT Gateway
+   - 這樣 Lambda 才能同時存取 RDS 和外部 API/服務
+
+#### 架構圖示
+
+```
+┌─────────────────── VPC ───────────────────┐
+│                                            │
+│  ┌─── Public Subnet ───┐                  │
+│  │                      │                  │
+│  │   NAT Gateway        │                  │
+│  │   (Internet Access)  │                  │
+│  └──────────────────────┘                  │
+│            │                               │
+│            ▼                               │
+│  ┌─── Private Subnet ──┐                  │
+│  │                      │                  │
+│  │  Lambda Function ────┼──► RDS Instance │
+│  │  (VPC-enabled)       │    (Private)    │
+│  │                      │                  │
+│  └──────────────────────┘                  │
+│                                            │
+└────────────────────────────────────────────┘
+```
+
+### 優缺點分析
+
+#### ✅ 優點
+
+| 項目 | 說明 |
+|------|------|
+| **安全性高** | RDS 不暴露在公共網路上，降低被攻擊風險 |
+| **符合合規要求** | 滿足多數企業和法規的安全標準 |
+| **內部網路通訊** | Lambda 與 RDS 之間使用私有 IP，延遲更低 |
+| **訪問控制** | 透過安全群組精確控制流量來源 |
+
+#### ⚠️ 缺點與取捨
+
+| 項目 | 說明 | 解決方案 |
+|------|------|----------|
+| **冷啟動時間增加** | VPC Lambda 需要建立 ENI（Elastic Network Interface），首次啟動會增加 5-10 秒 | 使用 [Provisioned Concurrency](https://docs.aws.amazon.com/lambda/latest/dg/provisioned-concurrency.html) 保持函數預熱 |
+| **額外成本** | NAT Gateway 費用約 $0.045/小時 + 流量費用 | 如果不需要外部網路存取，可以不使用 NAT Gateway |
+| **配置複雜度** | 需要理解 VPC、子網路、路由表、安全群組等概念 | 使用 Infrastructure as Code（如 Terraform、CloudFormation）管理 |
+| **無法直接存取公共 API** | 私有子網路中的 Lambda 預設無法存取網際網路 | 透過 NAT Gateway 或 VPC Endpoints 解決 |
+| **除錯困難** | 無法直接從本地連接 RDS 進行測試 | 使用 Bastion Host 或 AWS Systems Manager Session Manager |
+
+### 成本估算（以 us-east-1 為例）
+
+| 項目 | 費用 |
+|------|------|
+| NAT Gateway（運行時間） | $0.045/小時 ≈ $32.4/月 |
+| NAT Gateway（數據處理） | $0.045/GB |
+| Lambda ENI | 免費 |
+| VPC | 免費 |
+
+💡 **省錢技巧：** 如果 Lambda 只需存取 RDS 而不需要外部網路，可以**不使用 NAT Gateway**，節省約 $32/月。
+
+### 替代方案：RDS Proxy
+
+對於高並發場景，建議使用 **RDS Proxy**：
+
+```
+Lambda → RDS Proxy → RDS Instance
+```
+
+**優點：**
+- 管理資料庫連線池，避免連線數耗盡
+- 減少 Lambda 冷啟動時的資料庫連線時間
+- 支援 IAM 認證，無需管理密碼
+- 自動處理故障轉移
+
+**成本：** 
+- $0.015/小時/vCPU ≈ $11/月（單 vCPU）
+
+---
+
 ## 注意事項
 
 ### 安全性
 
-- **生產環境不建議**將 RDS 設為公開存取
+- **生產環境必須**將 RDS 設為私有存取
 - 密碼應使用 **AWS Secrets Manager** 管理
 - Lambda 與 RDS 應配置在同一個 **VPC** 內，並設定適當的**安全群組規則**
+- 定期輪換資料庫密碼
+- 啟用 RDS 加密（靜態和傳輸中）
 
 ### 成本優化
 
